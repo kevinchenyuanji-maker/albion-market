@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>Albion Asia 跑商套利 PRO</title>
+
+<style>
+body { background:#0b0f14; color:#d6e6ff; font-family:Arial; padding:18px; }
+button { padding:8px 12px; margin:4px; cursor:pointer; }
+table { width:100%; border-collapse:collapse; margin-top:10px; }
+td,th { border:1px solid #2b3442; padding:6px; font-size:12px; }
+th { background:#162233; cursor:pointer; }
+.good { color:#00ff88; }
+.warn { color:#ffcc00; }
+.bad { color:#ff5577; }
+.small { font-size:11px; color:#9bb0c9; }
+pre { background:#121a26; padding:10px; overflow:auto; }
+</style>
+
+</head>
+<body>
+
+<h2>⚔ Albion Asia 跑商套利 PRO</h2>
+
+<button onclick="loadDict()">1️⃣ 載入 Item Dictionary</button>
+<button onclick="scan()">2️⃣ 開始掃描套利</button>
+<button onclick="clearLog()">清除 log</button>
+
+<div class="small">使用 AODP East API + 官方 Item Dump</div>
+
+<h3>Log</h3>
+<pre id="log"></pre>
+
+<h3>Debug API</h3>
+<pre id="debug"></pre>
+
+<h3>結果</h3>
+<div id="result"></div>
+
+<script>
+
+const API = "https://east.albion-online-data.com/api/v2/stats/prices";
+const ITEM_URL = "https://raw.githubusercontent.com/ao-data/ao-bin-dumps/master/formatted/items.json";
+
+const CITIES = [
+  "Bridgewatch",
+  "Martlock",
+  "Lymhurst",
+  "Fort Sterling",
+  "Thetford",
+  "Caerleon"
+];
+
+let ITEMS = [];
+
+function log(msg){
+  document.getElementById("log").textContent += msg + "\n";
+}
+
+function clearLog(){
+  document.getElementById("log").textContent = "";
+}
+
+// ==========================
+// 1. LOAD ITEM DICTIONARY
+// ==========================
+async function loadDict(){
+
+  log("Loading Item Dictionary...");
+
+  const res = await fetch(ITEM_URL);
+  const data = await res.json();
+
+  ITEMS = data
+    .filter(x =>
+      x.UniqueName &&
+      !x.UniqueName.includes("@") &&
+      !x.UniqueName.startsWith("QUEST") &&
+      !x.UniqueName.startsWith("UNIQUE")
+    )
+    .map(x => ({
+      id: x.UniqueName,
+      name: x.LocalizedNames?.["EN-US"] || x.UniqueName,
+      tier: x.UniqueName.slice(0,2)
+    }));
+
+  log("Loaded items: " + ITEMS.length);
+}
+
+// ==========================
+// 2. FETCH PRICE
+// ==========================
+async function fetchPrices(itemId){
+
+  const url = `${API}/${itemId}.json?locations=${CITIES.join(",")}`;
+
+  const res = await fetch(url);
+  const data = await res.json();
+
+  document.getElementById("debug").textContent =
+    JSON.stringify(data, null, 2);
+
+  return data;
+}
+
+// ==========================
+// 3. SCAN ENGINE
+// ==========================
+async function scan(){
+
+  if(ITEMS.length === 0){
+    alert("先載入 Item Dictionary");
+    return;
+  }
+
+  log("Start scanning...");
+
+  const batchSize = 5;
+  let results = [];
+
+  // 限制掃描 T4~T6（避免爆 API）
+  const filtered = ITEMS.filter(i =>
+    i.id.startsWith("T4") ||
+    i.id.startsWith("T5") ||
+    i.id.startsWith("T6")
+  );
+
+  for(let i=0;i<filtered.length;i+=batchSize){
+
+    const batch = filtered.slice(i,i+batchSize);
+
+    for(let item of batch){
+
+      log("Scanning " + item.id);
+
+      let data = await fetchPrices(item.id);
+
+      if(!data || data.length === 0) continue;
+
+      let cityMap = {};
+
+      for(let r of data){
+
+        if(!cityMap[r.city]){
+          cityMap[r.city] = r;
+        }
+      }
+
+      let cities = Object.keys(cityMap);
+
+      for(let a of cities){
+        for(let b of cities){
+
+          if(a === b) continue;
+
+          let buy = cityMap[a].sell_price_min;
+          let sell = cityMap[b].buy_price_max;
+
+          if(!buy || !sell || buy <= 0 || sell <= 0) continue;
+
+          let profit = Math.floor(sell * 0.97 - buy);
+          let roi = profit / buy;
+
+          if(profit <= 0) continue;
+
+          results.push({
+            item: item.id,
+            name: item.name,
+            from: a,
+            to: b,
+            buy,
+            sell,
+            profit,
+            roi
+          });
+        }
+      }
+    }
+  }
+
+  render(results);
+}
+
+// ==========================
+// 4. RENDER
+// ==========================
+function render(results){
+
+  if(results.length === 0){
+    document.getElementById("result").innerHTML =
+      "<h3 class='bad'>❌ 沒有套利機會（請檢查 API / Item 是否正確）</h3>";
+    return;
+  }
+
+  results.sort((a,b)=>b.roi-a.roi);
+
+  let html = `
+  <table>
+    <tr>
+      <th>Item</th>
+      <th>Route</th>
+      <th>Buy</th>
+      <th>Sell</th>
+      <th>Profit</th>
+      <th>ROI</th>
+    </tr>
+  `;
+
+  for(let r of results.slice(0,50)){
+
+    html += `
+      <tr>
+        <td>${r.name}<br><span class="small">${r.item}</span></td>
+        <td>${r.from} → ${r.to}</td>
+        <td>${r.buy.toLocaleString()}</td>
+        <td>${r.sell.toLocaleString()}</td>
+        <td class="good">${r.profit.toLocaleString()}</td>
+        <td class="warn">${(r.roi*100).toFixed(2)}%</td>
+      </tr>
+    `;
+  }
+
+  html += "</table>";
+
+  document.getElementById("result").innerHTML = html;
+}
+
+</script>
+
+</body>
+</html>
